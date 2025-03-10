@@ -8,8 +8,8 @@ export async function activate(context: vscode.ExtensionContext) {
     // Show immediate feedback
     vscode.window.showInformationMessage('GPTme is starting...');
 
-    // Initialize the GptmeService
-    const gptmeService = GptmeService.getInstance();
+    // Initialize the GptmeService with context
+    const gptmeService = GptmeService.getInstance(context);
     
     // Show the GPTme view
     try {
