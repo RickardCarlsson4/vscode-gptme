@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { spawn, ChildProcess } from "child_process";
 import fetch from "node-fetch";
 import { ReadableStream } from "node:stream/web";
+import fs from "fs";
 
 interface Message {
   role: string;
@@ -34,25 +35,15 @@ export class GptmeService {
   >();
   public readonly onStatusChange = this.statusEmitter.event;
   private readonly extensionContext: vscode.ExtensionContext;
-  private workspaceFolder?: string;
 
   private constructor(context: vscode.ExtensionContext) {
     this.extensionContext = context;
     this.outputChannel = vscode.window.createOutputChannel("GPTme Server");
-
     this.outputChannel.appendLine("Initializing GPTme Service...");
 
     // Register for cleanup
     this.extensionContext.subscriptions.push(this.outputChannel);
     this.extensionContext.subscriptions.push(this.statusEmitter);
-
-    // Initialize workspace folder
-    this.updateWorkspaceFolder();
-
-    // Listen for workspace folder changes
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      this.updateWorkspaceFolder();
-    });
   }
 
   public static getInstance(context?: vscode.ExtensionContext): GptmeService {
@@ -70,68 +61,32 @@ export class GptmeService {
     this.statusEmitter.fire(status);
   }
 
-  private async updateWorkspaceFolder(): Promise<void> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    this.outputChannel.appendLine("Workspace change detected...");
-
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const newWorkspace = workspaceFolders[0].uri.fsPath;
-      this.outputChannel.appendLine(`Found workspace: ${newWorkspace}`);
-
-      if (this.workspaceFolder !== newWorkspace) {
-        this.outputChannel.appendLine(
-          `Workspace changed from ${
-            this.workspaceFolder || "none"
-          } to ${newWorkspace}`
-        );
-        this.workspaceFolder = newWorkspace;
-
-        // If server is running, restart it in new workspace
-        if (this.serverProcess) {
-          this.outputChannel.appendLine(
-            "Restarting server for new workspace..."
-          );
-          try {
-            await this.restartServer();
-          } catch (error) {
-            this.outputChannel.appendLine(`Failed to restart server: ${error}`);
-            vscode.window.showErrorMessage(
-              `Failed to initialize GPTme in new workspace: ${error}`
-            );
-          }
-        }
-      } else {
-        this.outputChannel.appendLine("Workspace unchanged");
-      }
-    } else {
-      const homeDir = process.env.HOME || process.env.USERPROFILE;
-      const fallbackDir = homeDir || require("os").tmpdir();
-      this.outputChannel.appendLine(
-        `No workspace folder, using fallback: ${fallbackDir}`
-      );
-
-      if (this.workspaceFolder) {
-        this.outputChannel.appendLine(
-          "Workspace was removed, reverting to fallback directory"
-        );
-        this.workspaceFolder = undefined;
-
-        if (this.serverProcess) {
-          this.outputChannel.appendLine(
-            "Restarting server in fallback location..."
-          );
-          try {
-            await this.restartServer();
-          } catch (error) {
-            this.outputChannel.appendLine(`Failed to restart server: ${error}`);
-          }
-        }
-      }
-    }
-  }
-
   private async ensureServerRunning(): Promise<void> {
     try {
+      // First check if gptme-server is installed
+      const checkProcess = spawn("gptme-server", ["--version"]);
+      await new Promise<void>((resolve, reject) => {
+        checkProcess.on("error", (error) => {
+          if ((error as any).code === "ENOENT") {
+            reject(
+              new Error(
+                "gptme-server is not installed. Please install it using: pip install gptme"
+              )
+            );
+          } else {
+            reject(error);
+          }
+        });
+        checkProcess.on("close", (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`gptme-server check failed with code ${code}`));
+          }
+        });
+      });
+
+      // Then check if server is already running
       const response = await fetch(`${this.baseUrl}/api/conversations`);
       if (response.ok) {
         console.log("Found existing server running");
@@ -139,36 +94,47 @@ export class GptmeService {
         return;
       }
     } catch (error) {
+      if (error instanceof Error && error.message.includes("not installed")) {
+        throw error;
+      }
       console.log("No existing server found, will start new one");
     }
 
-    // Update workspace folder before starting server
-    await this.updateWorkspaceFolder();
-
-    // Use workspace folder or fallback to current directory
-    const workingDir = this.workspaceFolder || process.cwd();
-    this.outputChannel.appendLine(`Using working directory: ${workingDir}`);
+    // Get the current workspace folder
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      throw new Error(
+        "No workspace folder is open. Please open a workspace first."
+      );
+    }
+    const workingDir = workspaceFolders[0].uri.fsPath;
+    this.outputChannel.appendLine(`Using workspace directory: ${workingDir}`);
 
     // Server options
     const serverOptions = {
       shell: true,
       env: {
         ...process.env,
-        PYTHONUNBUFFERED: "1", // Ensure Python output is not buffered
+        PYTHONUNBUFFERED: "1",
+        GPTME_WORKSPACE: workingDir,
       },
       cwd: workingDir,
     };
 
     console.log("Starting GPTme server...");
+    this.outputChannel.appendLine("Starting GPTme server...");
+    this.outputChannel.appendLine(
+      `Starting server with workspace: ${workingDir}`
+    );
+    this.outputChannel.appendLine(`Server CWD: ${workingDir}`);
+    this.outputChannel.appendLine(
+      `Server ENV: ${JSON.stringify(serverOptions.env, null, 2)}`
+    );
     this.outputChannel.show();
     this.updateStatus("starting");
 
-    // Start the server using child_process with workspace argument
-    this.serverProcess = spawn(
-      "gptme-server",
-      ["--verbose", "--workspace", workingDir],
-      serverOptions
-    );
+    // Start the server using child_process
+    this.serverProcess = spawn("gptme-server", ["--verbose"], serverOptions);
 
     if (this.serverProcess.stdout) {
       this.serverProcess.stdout.on("data", (data: Buffer) => {
@@ -221,7 +187,27 @@ export class GptmeService {
   public async createConversation(id: string): Promise<void> {
     await this.ensureServerRunning();
 
+    // Get the current workspace folder
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      throw new Error(
+        "No workspace folder is open. Please open a workspace first."
+      );
+    }
+    const workingDir = workspaceFolders[0].uri.fsPath;
+    this.outputChannel.appendLine(
+      `Creating conversation with workspace: ${workingDir}`
+    );
+
     console.log("Creating new conversation:", id);
+    const requestBody = {
+      messages: [],
+      workspace: workingDir,
+    };
+    this.outputChannel.appendLine(
+      `Request body: ${JSON.stringify(requestBody, null, 2)}`
+    );
+
     const createResponse = await fetch(
       `${this.baseUrl}/api/conversations/${id}`,
       {
@@ -229,15 +215,17 @@ export class GptmeService {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify([]),
+        body: JSON.stringify(requestBody),
       }
     );
 
+    const responseText = await createResponse.text();
+    this.outputChannel.appendLine(`Server response: ${responseText}`);
+
     if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      console.error("Failed to create conversation:", errorText);
+      console.error("Failed to create conversation:", responseText);
       throw new Error(
-        `Failed to create conversation: ${createResponse.status} ${errorText}`
+        `Failed to create conversation: ${createResponse.status} ${responseText}`
       );
     }
 
