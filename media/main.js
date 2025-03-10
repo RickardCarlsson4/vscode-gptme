@@ -38,10 +38,28 @@
       messageDiv.appendChild(errorIcon);
     }
 
-    // Handle message text
+    // Handle message text with markdown
     const textContent = document.createElement("div");
     textContent.style.whiteSpace = "pre-wrap"; // Preserve line breaks
-    textContent.textContent = type === "error" ? `Error: ${message}` : message;
+
+    if (type === "error") {
+      textContent.textContent = `Error: ${message}`;
+    } else {
+      // Configure marked with syntax highlighting
+      marked.setOptions({
+        highlight: function (code, lang) {
+          if (lang && hljs.getLanguage(lang)) {
+            return hljs.highlight(code, { language: lang }).value;
+          }
+          return hljs.highlightAuto(code).value;
+        },
+        breaks: true,
+      });
+
+      // Convert markdown to HTML
+      textContent.innerHTML = marked.parse(message);
+    }
+
     messageDiv.appendChild(textContent);
 
     // Add timestamp
