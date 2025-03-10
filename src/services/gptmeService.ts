@@ -356,18 +356,22 @@ export class GptmeService {
 
         const decoder = new TextDecoder();
         let fullResponse = "";
+        let buffer = "";
 
         try {
           // Handle Node.js readable stream
           for await (const chunk of response.body) {
             const text = decoder.decode(chunk as Buffer, { stream: true });
-            const lines = text.split("\n");
+            buffer += text;
+            const lines = buffer.split("\n");
+
+            // Keep the last partial line in the buffer
+            buffer = lines.pop() || "";
 
             for (const line of lines) {
               if (line.startsWith("data: ")) {
                 const data = line.slice(6);
                 try {
-                  console.log("Processing SSE data:", data);
                   const parsed = JSON.parse(data) as ServerResponse;
 
                   if (parsed.error) {
@@ -377,7 +381,6 @@ export class GptmeService {
                   switch (parsed.role) {
                     case "assistant":
                       if (parsed.stored) {
-                        console.log("Final response:", parsed.content);
                         fullResponse = parsed.content;
                         if (this._view) {
                           this._view.webview.postMessage({
@@ -398,7 +401,6 @@ export class GptmeService {
 
                     case "system":
                     case "tool":
-                      console.log(`${parsed.role} message:`, parsed.content);
                       if (this._view) {
                         this._view.webview.postMessage({
                           type: "response",
