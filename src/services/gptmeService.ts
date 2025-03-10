@@ -389,13 +389,6 @@ export class GptmeService {
                             role: "assistant",
                           });
                         }
-                      } else {
-                        if (this._view) {
-                          this._view.webview.postMessage({
-                            type: "stream",
-                            content: parsed.content,
-                          });
-                        }
                       }
                       break;
 

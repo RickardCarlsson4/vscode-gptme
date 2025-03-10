@@ -200,7 +200,11 @@
           // Add content container
           const contentDiv = document.createElement("div");
           contentDiv.style.whiteSpace = "pre-wrap";
-          contentDiv.textContent = message.message;
+          contentDiv.innerHTML = marked.parse(message.message);
+          // Highlight code blocks
+          contentDiv.querySelectorAll("pre code").forEach((block) => {
+            hljs.highlightBlock(block);
+          });
           div.appendChild(contentDiv);
 
           // Add timestamp
