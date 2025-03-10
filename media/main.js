@@ -16,6 +16,11 @@
   function addMessage(message, isUser, type = "normal") {
     console.log("Adding message:", { message, isUser, type });
 
+    // Skip thinking messages
+    if (message.startsWith("<think>")) {
+      return;
+    }
+
     const messageDiv = document.createElement("div");
     messageDiv.className = `message ${
       isUser ? "user-message" : "assistant-message"
@@ -38,10 +43,19 @@
       messageDiv.appendChild(errorIcon);
     }
 
-    // Handle message text
+    // Handle message text with markdown processing
     const textContent = document.createElement("div");
     textContent.style.whiteSpace = "pre-wrap"; // Preserve line breaks
-    textContent.textContent = type === "error" ? `Error: ${message}` : message;
+    if (type === "error") {
+      textContent.textContent = `Error: ${message}`;
+    } else {
+      // Process markdown and highlight code blocks
+      textContent.innerHTML = marked.parse(message);
+      // Highlight all code blocks
+      textContent.querySelectorAll("pre code").forEach((block) => {
+        hljs.highlightBlock(block);
+      });
+    }
     messageDiv.appendChild(textContent);
 
     // Add timestamp
@@ -263,6 +277,11 @@
   }
 
   function handleStreamMessage(content) {
+    // Skip thinking messages
+    if (content.startsWith("<think>")) {
+      return;
+    }
+
     // Remove any existing stream message
     const streamDiv = document.getElementById("stream-message");
     if (streamDiv) {
@@ -282,10 +301,14 @@
     roleIndicator.textContent = "Assistant";
     div.appendChild(roleIndicator);
 
-    // Add content container
+    // Add content container with markdown processing
     const contentDiv = document.createElement("div");
     contentDiv.style.whiteSpace = "pre-wrap";
-    contentDiv.textContent = content;
+    contentDiv.innerHTML = marked.parse(content);
+    // Highlight all code blocks
+    contentDiv.querySelectorAll("pre code").forEach((block) => {
+      hljs.highlightBlock(block);
+    });
     div.appendChild(contentDiv);
 
     // Add timestamp

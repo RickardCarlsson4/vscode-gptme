@@ -61,55 +61,7 @@ export class GptmeService {
     this.statusEmitter.fire(status);
   }
 
-  private async ensureServerRunning(): Promise<void> {
-    try {
-      // First check if gptme-server is installed
-      const checkProcess = spawn("gptme-server", ["--version"]);
-      await new Promise<void>((resolve, reject) => {
-        checkProcess.on("error", (error) => {
-          if ((error as any).code === "ENOENT") {
-            reject(
-              new Error(
-                "gptme-server is not installed. Please install it using: pip install gptme"
-              )
-            );
-          } else {
-            reject(error);
-          }
-        });
-        checkProcess.on("close", (code) => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`gptme-server check failed with code ${code}`));
-          }
-        });
-      });
-
-      // Then check if server is already running
-      const response = await fetch(`${this.baseUrl}/api/conversations`);
-      if (response.ok) {
-        console.log("Found existing server running");
-        this.updateStatus("running");
-        return;
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("not installed")) {
-        throw error;
-      }
-      console.log("No existing server found, will start new one");
-    }
-
-    // Get the current workspace folder
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-      throw new Error(
-        "No workspace folder is open. Please open a workspace first."
-      );
-    }
-    const workingDir = workspaceFolders[0].uri.fsPath;
-    this.outputChannel.appendLine(`Using workspace directory: ${workingDir}`);
-
+  private async startNewServer(workingDir: string): Promise<void> {
     // Server options
     const serverOptions = {
       shell: true,
@@ -182,6 +134,118 @@ export class GptmeService {
     const errorMsg = "Failed to start GPTme server after multiple attempts";
     this.updateStatus("error");
     throw new Error(errorMsg);
+  }
+
+  private async ensureServerRunning(): Promise<void> {
+    let serverRunning = false;
+    console.log("Starting ensureServerRunning check...");
+
+    try {
+      // First check if server is already running
+      console.log("Checking if server is already running...");
+      try {
+        const response = await fetch(`${this.baseUrl}/api/conversations`);
+        if (response.ok) {
+          console.log("Found server running (successful response)");
+          serverRunning = true;
+        }
+      } catch (error) {
+        if (error instanceof Error) {
+          console.log("Server check error:", error.message);
+          if (error.message.includes("Address already in use")) {
+            console.log("Detected server running (port in use)");
+            serverRunning = true;
+          } else if (!error.message.includes("ECONNREFUSED")) {
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      if (serverRunning) {
+        console.log("Found existing server running, returning");
+        this.updateStatus("running");
+        return;
+      }
+
+      // If no server is running, check if gptme-server is installed before trying to start one
+      console.log(
+        "No server running, checking if gptme-server is installed..."
+      );
+      const checkProcess = spawn("gptme-server", ["--version"]);
+      await new Promise<void>((resolve, reject) => {
+        checkProcess.on("error", (error) => {
+          if ((error as any).code === "ENOENT") {
+            reject(
+              new Error(
+                "gptme-server is not installed. Please install it using: pip install gptme"
+              )
+            );
+          } else {
+            reject(error);
+          }
+        });
+        checkProcess.on("close", (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                `gptme-server check failed with code ${code}. Please ensure gptme-server is installed correctly.`
+              )
+            );
+          }
+        });
+      });
+      console.log("gptme-server is installed");
+
+      // If we get here, we need to start a new server
+      console.log("No server running, will start new one");
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders || workspaceFolders.length === 0) {
+        throw new Error(
+          "No workspace folder is open. Please open a workspace first."
+        );
+      }
+      const workingDir = workspaceFolders[0].uri.fsPath;
+      this.outputChannel.appendLine(`Using workspace directory: ${workingDir}`);
+
+      // Start a new server
+      await this.startNewServer(workingDir);
+    } catch (error) {
+      console.log("Caught error in ensureServerRunning:", error);
+      // If we've already detected a server running, don't try to start a new one
+      if (serverRunning) {
+        console.log("Server already running, not starting new one");
+        return;
+      }
+      // If the error is about gptme-server not being installed or failing, throw it
+      if (
+        error instanceof Error &&
+        (error.message.includes("not installed") ||
+          error.message.includes("check failed"))
+      ) {
+        throw error;
+      }
+      // Only try to start a new server if we haven't detected one running
+      if (!serverRunning) {
+        console.log("No server running detected, will try to start one");
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+          throw new Error(
+            "No workspace folder is open. Please open a workspace first."
+          );
+        }
+        const workingDir = workspaceFolders[0].uri.fsPath;
+        this.outputChannel.appendLine(
+          `Using workspace directory: ${workingDir}`
+        );
+
+        // Start a new server
+        await this.startNewServer(workingDir);
+      }
+    }
   }
 
   public async createConversation(id: string): Promise<void> {
